@@ -320,17 +320,20 @@ class TelegramBotComponent(
     }
 
     suspend fun sendFileToChannel(file: File, caption: String) {
-        val chatId = channelId.toLongOrNull() ?: return
+        if (channelId.isBlank()) {
+            logger.warn("TELEGRAM_CHANNEL_ID not set, skipping upload of {}", file.name)
+            return
+        }
         try {
             if (file.length() > 45_000_000) {
-                sendMessage(chatId, "✂️ Splitting ${file.name} (${fmtBytes(file.length())}) into parts...")
+                sendMessage(channelId, "✂️ Splitting ${file.name} (${fmtBytes(file.length())}) into parts...")
                 val parts = splitVideo(file)
                 if (parts.isEmpty()) {
-                    sendMessage(chatId, "⚠️ Split failed, trying URL fallback for ${file.name}...")
-                    sendViaUrl(chatId, file, caption)
+                    sendMessage(channelId, "⚠️ Split failed, trying URL fallback for ${file.name}...")
+                    sendViaUrl(channelId, file, caption)
                     return
                 }
-                sendMessage(chatId, "⬆️ Uploading ${parts.size} parts...")
+                sendMessage(channelId, "⬆️ Uploading ${parts.size} parts...")
                 var ok = 0; var fail = 0
                 coroutineScope {
                     parts.mapIndexed { i, part ->
@@ -338,12 +341,12 @@ class TelegramBotComponent(
                             uploadSemaphore.acquire()
                             try {
                                 val partCaption = "$caption\nPart ${i + 1}/${parts.size}"
-                                uploadVideoDirectly(chatId, part, partCaption)
+                                uploadVideoDirectly(channelId, part, partCaption)
                                 ok++
                             } catch (e: Exception) {
                                 fail++
                                 logger.error("Part ${i+1} failed: ${e.message}")
-                                sendMessage(chatId, "⚠️ Part ${i+1} failed (${e.message})")
+                                sendMessage(channelId, "⚠️ Part ${i+1} failed (${e.message})")
                             } finally {
                                 uploadSemaphore.release()
                                 part.delete()
@@ -356,9 +359,9 @@ class TelegramBotComponent(
                     if (fail > 0) append(" ($fail failed)")
                     append(" for ${file.name}")
                 }
-                sendMessage(chatId, msg)
+                sendMessage(channelId, msg)
             } else {
-                uploadVideoDirectly(chatId, file, caption)
+                uploadVideoDirectly(channelId, file, caption)
             }
             logger.info("Processed {} for Telegram channel {}", file.name, channelId)
         } catch (e: Exception) {
@@ -366,7 +369,22 @@ class TelegramBotComponent(
         }
     }
 
-    private suspend fun sendViaUrl(chatId: Long, file: File, caption: String) {
+    private suspend fun sendMessage(chatId: String, text: String) {
+        try {
+            httpClient.post("$apiUrl/sendMessage") {
+                setBody(buildJsonObject {
+                    put("chat_id", chatId)
+                    put("text", text)
+                    put("parse_mode", "HTML")
+                })
+                contentType(ContentType.Application.Json)
+            }
+        } catch (e: Exception) {
+            logger.error("Failed to send Telegram message: ${e.message}")
+        }
+    }
+
+    private suspend fun sendViaUrl(chatId: String, file: File, caption: String) {
         if (publicUrl.isBlank()) return
         fixMeta(file)
         val fileUrl = "${publicUrl.trimEnd('/')}/tmpfiles/${file.name}"
@@ -405,7 +423,7 @@ class TelegramBotComponent(
         } catch (_: Exception) { }
     }
 
-    private suspend fun uploadVideoDirectly(chatId: Long, file: File, caption: String) = withContext(Dispatchers.IO) {
+    private suspend fun uploadVideoDirectly(chatId: String, file: File, caption: String) = withContext(Dispatchers.IO) {
         // Remux with +faststart for moov-at-front (WriterComponent already does this,
         // but do it here too in case Writer remux was skipped)
         val fixed = File(file.parentFile, ".${file.name}.fixed.mp4")
