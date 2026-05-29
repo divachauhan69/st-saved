@@ -40,27 +40,29 @@ class AuthComponent(
         list.forEach { users[it.userId] = it }
     }
 
-    override suspend fun handle(msg: AuthMsg) = when (msg) {
-        is LoadUsers -> { msg.users.forEach { users[it.userId] = it }; logger.info("Loaded ${users.size} users") }
-        is OnAuthEvent -> when (msg.event) {
-            is AuthExpired -> { users.remove(msg.event.userId); logger.info("User ${msg.event.userId} expired, removed") }
-            is PersistConfig -> {
-                try {
-                    File(usersPath).writeText(users.values.joinToString("\n") { it.cookie })
-                } catch (e: Exception) {
-                    logger.warn("Failed to save users.txt: ${e.message}")
-                }
-                try {
-                    if (mongo.isConnected()) {
-                        mongo.saveUsers(users.values.toList())
+    override suspend fun handle(msg: AuthMsg) {
+        when (msg) {
+            is LoadUsers -> { msg.users.forEach { users[it.userId] = it }; logger.info("Loaded ${users.size} users") }
+            is OnAuthEvent -> when (msg.event) {
+                is AuthExpired -> { users.remove(msg.event.userId); logger.info("User ${msg.event.userId} expired, removed") }
+                is PersistConfig -> {
+                    try {
+                        File(usersPath).writeText(users.values.joinToString("\n") { it.cookie })
+                    } catch (e: Exception) {
+                        logger.warn("Failed to save users.txt: ${e.message}")
                     }
-                } catch (e: Exception) {
-                    logger.warn("Failed to save users to MongoDB: ${e.message}")
+                    try {
+                        if (mongo.isConnected()) {
+                            mongo.saveUsers(users.values.toList())
+                        }
+                    } catch (e: Exception) {
+                        logger.warn("Failed to save users to MongoDB: ${e.message}")
+                    }
                 }
+                else -> {}
             }
-            else -> {}
+            is HandleAuthQuery -> handleQuery(msg.env)
         }
-        is HandleAuthQuery -> handleQuery(msg.env)
     }
 
     private suspend fun handleQuery(env: CommandEnvelope) {
