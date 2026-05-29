@@ -275,83 +275,82 @@ class TelegramBotComponent(
     suspend fun sendFileToChannel(file: File, caption: String) {
         val chatId = channelId.toLongOrNull() ?: return
         try {
-            if (publicUrl.isNotBlank()) {
-                val relPath = file.absolutePath.replace(File.separator, "/")
-                val outIndex = relPath.indexOf("/out/")
-                val fileUrl = if (outIndex >= 0) {
-                    "$publicUrl/files/${relPath.substring(outIndex + 5)}"
+            if (file.length() > 45_000_000) {
+                sendMessage(chatId, "✂️ Splitting ${file.name} (${fmtBytes(file.length())}) into parts...")
+                val parts = splitVideo(file)
+                if (parts.isNotEmpty()) {
+                    for ((i, part) in parts.withIndex()) {
+                        val partCaption = "$caption\nPart ${i + 1}/${parts.size}"
+                        uploadVideo(chatId, part, partCaption)
+                        part.delete()
+                    }
+                    sendMessage(chatId, "✅ ${parts.size} parts uploaded for ${file.name}")
                 } else {
-                    "$publicUrl/files/${file.name}"
-                }
-                httpClient.post("$apiUrl/sendVideo") {
-                    setBody(buildJsonObject {
-                        put("chat_id", chatId)
-                        put("video", fileUrl)
-                        put("caption", caption)
-                    })
-                    contentType(ContentType.Application.Json)
-                }
-                logger.info("Sent {} URL to Telegram channel {}", file.name, channelId)
-            } else if (file.length() > 45_000_000) {
-                sendMessage(chatId, "⚙️ Compressing ${file.name} (${fmtBytes(file.length())})...")
-                val compressed = compressVideo(file)
-                if (compressed != null) {
-                    httpClient.submitFormWithBinaryData(
-                        url = "$apiUrl/sendVideo",
-                        formData = formData {
-                            append("chat_id", chatId)
-                            append("caption", caption)
-                            append("video", compressed.readBytes(), Headers.build {
-                                append(HttpHeaders.ContentType, "video/mp4")
-                                append(HttpHeaders.ContentDisposition, "filename=\"${compressed.name}\"")
-                            })
-                        }
-                    )
-                    compressed.delete()
-                } else {
-                    sendMessage(chatId, "⚠️ Compression failed, file too large: ${file.name}")
+                    sendMessage(chatId, "⚠️ Failed to split ${file.name}")
                 }
             } else {
-                httpClient.submitFormWithBinaryData(
-                    url = "$apiUrl/sendVideo",
-                    formData = formData {
-                        append("chat_id", chatId)
-                        append("caption", caption)
-                        append("video", file.readBytes(), Headers.build {
-                            append(HttpHeaders.ContentType, "video/mp4")
-                            append(HttpHeaders.ContentDisposition, "filename=\"${file.name}\"")
-                        })
-                    }
-                )
+                uploadVideo(chatId, file, caption)
             }
-            logger.info("Uploaded {} to Telegram channel {}", file.name, channelId)
+            logger.info("Processed {} for Telegram channel {}", file.name, channelId)
         } catch (e: Exception) {
             logger.error("Failed to upload file to Telegram: ${e.message}")
         }
     }
 
-    private fun compressVideo(input: File): File? {
+    private suspend fun uploadVideo(chatId: Long, file: File, caption: String) {
+        httpClient.submitFormWithBinaryData(
+            url = "$apiUrl/sendVideo",
+            formData = formData {
+                append("chat_id", chatId)
+                append("caption", caption)
+                append("video", file.readBytes(), Headers.build {
+                    append(HttpHeaders.ContentType, "video/mp4")
+                    append(HttpHeaders.ContentDisposition, "filename=\"${file.name}\"")
+                })
+            }
+        )
+    }
+
+    private fun splitVideo(input: File): List<File> {
         try {
-            val output = File(input.parentFile, "${input.nameWithoutExtension}-compressed.mp4")
+            val totalSize = input.length()
+            val targetSize = 42_000_000L
+            val numParts = ((totalSize + targetSize - 1) / targetSize).toInt().coerceAtMost(20)
+            if (numParts <= 1) return listOf(input)
+
+            val probe = ProcessBuilder(
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "csv=p=0",
+                input.absolutePath
+            ).also { it.redirectErrorStream(true) }.start()
+            val durStr = probe.inputStream.bufferedReader().readText().trim()
+            probe.waitFor(30, java.util.concurrent.TimeUnit.SECONDS)
+            val totalDur = durStr.toDoubleOrNull() ?: return listOf(input)
+            val segDur = totalDur / numParts
+
+            val prefix = File(input.parentFile, "${input.nameWithoutExtension}_part_")
+            val pattern = "${prefix.absolutePath}%03d.mp4"
             val pb = ProcessBuilder(
                 "ffmpeg", "-y", "-i", input.absolutePath,
-                "-c:v", "libx264", "-preset", "fast", "-crf", "28",
-                "-c:a", "aac", "-b:a", "64k",
-                "-fs", "45M",
-                output.absolutePath
+                "-c", "copy", "-f", "segment",
+                "-segment_time", segDur.toString(),
+                "-reset_timestamps", "1",
+                "-avoid_negative_ts", "make_zero",
+                pattern
             )
             pb.redirectErrorStream(true)
             val proc = pb.start()
-            proc.waitFor(600, java.util.concurrent.TimeUnit.SECONDS)
-            if (output.exists() && output.length() > 0 && output.length() < input.length()) {
-                logger.info("Compressed {} ({} -> {})", input.name, fmtBytes(input.length()), fmtBytes(output.length()))
-                return output
+            proc.waitFor(300, java.util.concurrent.TimeUnit.SECONDS)
+
+            val parts = (0 until numParts).mapNotNull { i ->
+                val f = File(prefix.absolutePath + "%03d.mp4".format(i))
+                f.takeIf { it.exists() && it.length() > 0 }
             }
-            output.delete()
-            return null
+            return parts
         } catch (e: Exception) {
-            logger.error("Compression failed: ${e.message}")
-            return null
+            logger.error("Split failed: ${e.message}")
+            return listOf(input)
         }
     }
 
