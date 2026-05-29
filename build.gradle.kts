@@ -33,7 +33,7 @@ dependencies {
     implementation("io.ktor:ktor-client-content-negotiation-jvm:3.4.1")
 
     implementation("io.github.nomisrev:kotlinx-serialization-jsonpath:1.0.0")
-    implementation("org.jsoup:jsoup:1.22.1")
+    implementation("org.jsoup:jsoup:1.22.2")
     implementation("org.jline:jline:3.30.6")
     implementation("commons-cli:commons-cli:1.11.0")
     implementation("org.mongodb:mongodb-driver-sync:5.3.1")
