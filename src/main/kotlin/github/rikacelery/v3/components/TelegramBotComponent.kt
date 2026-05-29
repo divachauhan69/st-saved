@@ -316,13 +316,18 @@ class TelegramBotComponent(
                 val parts = splitVideo(file)
                 if (parts.isNotEmpty()) {
                     sendMessage(chatId, "⬆️ Uploading ${parts.size} parts...")
+                    var ok = 0; var fail = 0
                     coroutineScope {
                         parts.mapIndexed { i, part ->
                             async {
                                 uploadSemaphore.acquire()
                                 try {
                                     val partCaption = "$caption\nPart ${i + 1}/${parts.size}"
-                                    sendVideoUrl(chatId, part, partCaption)
+                                    uploadWithFallback(chatId, part, partCaption)
+                                    ok++
+                                } catch (e: Exception) {
+                                    fail++
+                                    logger.error("Part ${i+1} failed: ${e.message}")
                                 } finally {
                                     uploadSemaphore.release()
                                     part.delete()
@@ -330,12 +335,17 @@ class TelegramBotComponent(
                             }
                         }.awaitAll()
                     }
-                    sendMessage(chatId, "✅ ${parts.size} parts uploaded for ${file.name}")
+                    val msg = buildString {
+                        append("✅ ${ok}/${parts.size} parts uploaded")
+                        if (fail > 0) append(" ($fail failed)")
+                        append(" for ${file.name}")
+                    }
+                    sendMessage(chatId, msg)
                 } else {
                     sendMessage(chatId, "⚠️ Failed to split ${file.name}")
                 }
             } else {
-                sendVideoUrl(chatId, file, caption)
+                uploadWithFallback(chatId, file, caption)
             }
             logger.info("Processed {} for Telegram channel {}", file.name, channelId)
         } catch (e: Exception) {
@@ -343,27 +353,27 @@ class TelegramBotComponent(
         }
     }
 
-    private suspend fun sendVideoUrl(chatId: Long, file: File, caption: String) {
-        fixMeta(file)
-        val publicBase = publicUrl.trimEnd('/')
-        val fileUrl = "$publicBase/tmpfiles/${file.name}"
+    private suspend fun uploadWithFallback(chatId: Long, file: File, caption: String) {
         try {
-            val resp = httpClient.post("$apiUrl/sendVideo") {
-                setBody(buildJsonObject {
-                    put("chat_id", chatId)
-                    put("video", fileUrl)
-                    put("caption", caption)
-                })
-                contentType(ContentType.Application.Json)
-            }
-            if (resp.status.isSuccess()) return
-            val body = resp.bodyAsText()
-            logger.error("Telegram sendVideo URL returned ${resp.status}: $body")
+            uploadVideoDirectly(chatId, file, caption)
         } catch (e: Exception) {
-            logger.warn("Telegram URL send failed (${e.message}), trying direct upload...")
+            logger.warn("Direct upload failed (${e.message}), trying URL...")
+            if (publicUrl.isNotBlank()) {
+                fixMeta(file)
+                val fileUrl = "${publicUrl.trimEnd('/')}/tmpfiles/${file.name}"
+                val resp = httpClient.post("$apiUrl/sendVideo") {
+                    setBody(buildJsonObject {
+                        put("chat_id", chatId)
+                        put("video", fileUrl)
+                        put("caption", caption)
+                    })
+                    contentType(ContentType.Application.Json)
+                }
+                if (!resp.status.isSuccess()) {
+                    logger.error("Telegram URL fallback also failed: ${resp.status} ${resp.bodyAsText()}")
+                }
+            }
         }
-        sendMessage(chatId, "⬆️ Direct upload for ${file.name}...")
-        uploadVideoDirectly(chatId, file, caption)
     }
 
     private fun fixMeta(file: File) {
@@ -384,12 +394,21 @@ class TelegramBotComponent(
     }
 
     private suspend fun uploadVideoDirectly(chatId: Long, file: File, caption: String) {
+        if (file.length() > 48_000_000) {
+            logger.warn("File too large (${file.length()}) for direct upload, re-splitting...")
+            val parts = splitVideo(file, targetSize = 30_000_000)
+            for ((i, part) in parts.withIndex()) {
+                uploadVideoDirectly(chatId, part, "$caption\nPart ${i + 1}/${parts.size}")
+                part.delete()
+            }
+            return
+        }
         val resp = httpClient.submitFormWithBinaryData(
             url = "$apiUrl/sendVideo",
             formData = formData {
                 append("chat_id", chatId)
                 append("caption", caption)
-                append("video", File(file.absolutePath).readBytes(), Headers.build {
+                append("video", file.readBytes(), Headers.build {
                     append(HttpHeaders.ContentType, "video/mp4")
                     append(HttpHeaders.ContentDisposition, "filename=\"${file.name}\"")
                 })
@@ -397,14 +416,21 @@ class TelegramBotComponent(
         )
         if (!resp.status.isSuccess()) {
             val body = resp.bodyAsText()
-            logger.error("Telegram sendVideo direct returned ${resp.status}: $body")
+            logger.error("Telegram sendVideo returned ${resp.status}: $body")
+            if (resp.status.value == 413) {
+                logger.warn("413 Entity Too Large, re-splitting with smaller target...")
+                val parts = splitVideo(file, targetSize = 30_000_000)
+                for ((i, part) in parts.withIndex()) {
+                    uploadVideoDirectly(chatId, part, "$caption\nPart ${i + 1}/${parts.size}")
+                    part.delete()
+                }
+            }
         }
     }
 
-    private fun splitVideo(input: File): List<File> {
+    private fun splitVideo(input: File, targetSize: Long = 35_000_000): List<File> {
         try {
             val totalSize = input.length()
-            val targetSize = 42_000_000L
             val numParts = ((totalSize + targetSize - 1) / targetSize).toInt()
             if (numParts <= 1) return listOf(input)
 
