@@ -17,7 +17,6 @@ import kotlinx.coroutines.*
 import kotlinx.serialization.json.*
 import org.slf4j.LoggerFactory
 import java.io.File
-import java.security.KeyStore
 import java.util.*
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.time.Duration
@@ -32,7 +31,9 @@ class HttpServerComponent(
     private val metricComponent: MetricComponent,
     private val postProcessorComponent: PostProcessorComponent,
     private val scope: CoroutineScope,
-    private val mseStore: MseStore = MseStore()
+    private val mseStore: MseStore = MseStore(),
+    private val outputDir: File = File("out"),
+    private val publicUrl: String = ""
 ) {
     private val logger = LoggerFactory.getLogger("v3.HttpServer")
     private val stopping = AtomicBoolean(false)
@@ -313,6 +314,15 @@ class HttpServerComponent(
                 }
                 get("/metrics") {
                     call.respondText(metricComponent.prometheusText())
+                }
+                get("/files/{name...}") {
+                    val name = call.parameters.getAll("name")?.joinToString(File.separator) ?: return@get
+                    val file = File(outputDir, name).canonicalFile
+                    if (!file.exists() || !file.startsWith(outputDir.canonicalFile)) {
+                        call.respondText("Not found", status = HttpStatusCode.NotFound)
+                        return@get
+                    }
+                    call.respondFile(file)
                 }
                 get("/mse/live") {
                     val id = call.request.queryParameters["id"]?.toLongOrNull()

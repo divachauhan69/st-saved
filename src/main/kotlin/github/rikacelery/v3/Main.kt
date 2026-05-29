@@ -124,7 +124,9 @@ fun main(vararg args: String) {
                 metricComponent,
                 postProcessorComponent,
                 appScope,
-                mseStore
+                mseStore,
+                outputDir = config.outputDir,
+                publicUrl = config.publicUrl
             )
 
             val telegramBot = TelegramBotComponent(
@@ -132,6 +134,7 @@ fun main(vararg args: String) {
                 channelId = config.telegramChannelId,
                 allowedUsers = config.telegramAllowedUsers,
                 requestBus = requestBus,
+                publicUrl = config.publicUrl,
                 eventBus = eventBus,
                 parentScope = appScope
             )

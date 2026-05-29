@@ -34,6 +34,7 @@ class TelegramBotComponent(
     private val channelId: String,
     private val allowedUsers: List<Long>,
     private val requestBus: RequestBus,
+    private val publicUrl: String = "",
     eventBus: EventBus,
     parentScope: CoroutineScope
 ) : Actor<TelegramMsg>("TelegramBot", eventBus, parentScope) {
@@ -274,12 +275,43 @@ class TelegramBotComponent(
     suspend fun sendFileToChannel(file: File, caption: String) {
         val chatId = channelId.toLongOrNull() ?: return
         try {
-            val uploadFile = if (file.length() > 45_000_000) {
+            if (publicUrl.isNotBlank()) {
+                val relPath = file.absolutePath.replace(File.separator, "/")
+                val outIndex = relPath.indexOf("/out/")
+                val fileUrl = if (outIndex >= 0) {
+                    "$publicUrl/files/${relPath.substring(outIndex + 5)}"
+                } else {
+                    "$publicUrl/files/${file.name}"
+                }
+                httpClient.post("$apiUrl/sendVideo") {
+                    setBody(buildJsonObject {
+                        put("chat_id", chatId)
+                        put("video", fileUrl)
+                        put("caption", caption)
+                    })
+                    contentType(ContentType.Application.Json)
+                }
+                logger.info("Sent {} URL to Telegram channel {}", file.name, channelId)
+            } else if (file.length() > 45_000_000) {
                 sendMessage(chatId, "⚙️ Compressing ${file.name} (${fmtBytes(file.length())})...")
-                compressVideo(file)
-            } else file
-            if (uploadFile == null || !uploadFile.exists() || uploadFile.length() == 0L) {
-                sendMessage(chatId, "⚠️ Failed to compress ${file.name}, uploading original anyway")
+                val compressed = compressVideo(file)
+                if (compressed != null) {
+                    httpClient.submitFormWithBinaryData(
+                        url = "$apiUrl/sendVideo",
+                        formData = formData {
+                            append("chat_id", chatId)
+                            append("caption", caption)
+                            append("video", compressed.readBytes(), Headers.build {
+                                append(HttpHeaders.ContentType, "video/mp4")
+                                append(HttpHeaders.ContentDisposition, "filename=\"${compressed.name}\"")
+                            })
+                        }
+                    )
+                    compressed.delete()
+                } else {
+                    sendMessage(chatId, "⚠️ Compression failed, file too large: ${file.name}")
+                }
+            } else {
                 httpClient.submitFormWithBinaryData(
                     url = "$apiUrl/sendVideo",
                     formData = formData {
@@ -291,19 +323,6 @@ class TelegramBotComponent(
                         })
                     }
                 )
-            } else {
-                httpClient.submitFormWithBinaryData(
-                    url = "$apiUrl/sendVideo",
-                    formData = formData {
-                        append("chat_id", chatId)
-                        append("caption", caption)
-                        append("video", uploadFile.readBytes(), Headers.build {
-                            append(HttpHeaders.ContentType, "video/mp4")
-                            append(HttpHeaders.ContentDisposition, "filename=\"${uploadFile.name}\"")
-                        })
-                    }
-                )
-                uploadFile.delete()
             }
             logger.info("Uploaded {} to Telegram channel {}", file.name, channelId)
         } catch (e: Exception) {

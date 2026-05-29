@@ -16,5 +16,6 @@ data class SystemConfig(
     val telegramBotToken: String = System.getenv("TELEGRAM_BOT_TOKEN") ?: "",
     val telegramChannelId: String = System.getenv("TELEGRAM_CHANNEL_ID") ?: "",
     val telegramAllowedUsers: List<Long> = (System.getenv("TELEGRAM_ALLOWED_USERS") ?: "")
-        .split(",").filter { it.isNotBlank() }.mapNotNull { it.trim().toLongOrNull() }
+        .split(",").filter { it.isNotBlank() }.mapNotNull { it.trim().toLongOrNull() },
+    val publicUrl: String = System.getenv("PUBLIC_URL") ?: ""
 )
