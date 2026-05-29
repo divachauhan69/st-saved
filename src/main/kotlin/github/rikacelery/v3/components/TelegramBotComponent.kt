@@ -274,24 +274,65 @@ class TelegramBotComponent(
     suspend fun sendFileToChannel(file: File, caption: String) {
         val chatId = channelId.toLongOrNull() ?: return
         try {
-            if (file.length() > 50_000_000) {
-                sendMessage(chatId, "⚠️ File too large (>50MB), cannot upload: ${file.name}")
-                return
+            val uploadFile = if (file.length() > 45_000_000) {
+                sendMessage(chatId, "⚙️ Compressing ${file.name} (${fmtBytes(file.length())})...")
+                compressVideo(file)
+            } else file
+            if (uploadFile == null || !uploadFile.exists() || uploadFile.length() == 0L) {
+                sendMessage(chatId, "⚠️ Failed to compress ${file.name}, uploading original anyway")
+                httpClient.submitFormWithBinaryData(
+                    url = "$apiUrl/sendVideo",
+                    formData = formData {
+                        append("chat_id", chatId)
+                        append("caption", caption)
+                        append("video", file.readBytes(), Headers.build {
+                            append(HttpHeaders.ContentType, "video/mp4")
+                            append(HttpHeaders.ContentDisposition, "filename=\"${file.name}\"")
+                        })
+                    }
+                )
+            } else {
+                httpClient.submitFormWithBinaryData(
+                    url = "$apiUrl/sendVideo",
+                    formData = formData {
+                        append("chat_id", chatId)
+                        append("caption", caption)
+                        append("video", uploadFile.readBytes(), Headers.build {
+                            append(HttpHeaders.ContentType, "video/mp4")
+                            append(HttpHeaders.ContentDisposition, "filename=\"${uploadFile.name}\"")
+                        })
+                    }
+                )
+                uploadFile.delete()
             }
-            httpClient.submitFormWithBinaryData(
-                url = "$apiUrl/sendVideo",
-                formData = formData {
-                    append("chat_id", chatId)
-                    append("caption", caption)
-                    append("video", file.readBytes(), Headers.build {
-                        append(HttpHeaders.ContentType, "video/mp4")
-                        append(HttpHeaders.ContentDisposition, "filename=\"${file.name}\"")
-                    })
-                }
-            )
             logger.info("Uploaded {} to Telegram channel {}", file.name, channelId)
         } catch (e: Exception) {
             logger.error("Failed to upload file to Telegram: ${e.message}")
+        }
+    }
+
+    private fun compressVideo(input: File): File? {
+        try {
+            val output = File(input.parentFile, "${input.nameWithoutExtension}-compressed.mp4")
+            val pb = ProcessBuilder(
+                "ffmpeg", "-y", "-i", input.absolutePath,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "28",
+                "-c:a", "aac", "-b:a", "64k",
+                "-fs", "45M",
+                output.absolutePath
+            )
+            pb.redirectErrorStream(true)
+            val proc = pb.start()
+            proc.waitFor(120, java.util.concurrent.TimeUnit.SECONDS)
+            if (output.exists() && output.length() > 0 && output.length() < input.length()) {
+                logger.info("Compressed {} ({} -> {})", input.name, fmtBytes(input.length()), fmtBytes(output.length()))
+                return output
+            }
+            output.delete()
+            return null
+        } catch (e: Exception) {
+            logger.error("Compression failed: ${e.message}")
+            return null
         }
     }
 
