@@ -402,8 +402,8 @@ class TelegramBotComponent(
         val remuxOk = try {
             val pb = ProcessBuilder(
                 "ffmpeg", "-y", "-i", file.absolutePath,
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                "-c:a", "aac", "-b:a", "128k",
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "28",
+                "-c:a", "aac", "-b:a", "96k",
                 "-movflags", "+faststart",
                 fixed.absolutePath
             )
