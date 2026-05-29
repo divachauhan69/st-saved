@@ -391,7 +391,8 @@ class TelegramBotComponent(
         try {
             val tmp = File(file.parentFile, ".${file.name}.meta")
             val pb = ProcessBuilder(
-                "ffmpeg", "-y", "-i", file.absolutePath,
+                "ffmpeg", "-y", "-fflags", "+genpts",
+                "-i", file.absolutePath,
                 "-map", "0", "-c", "copy",
                 "-movflags", "+faststart",
                 tmp.absolutePath
@@ -410,7 +411,8 @@ class TelegramBotComponent(
         val fixed = File(file.parentFile, ".${file.name}.fixed.mp4")
         val remuxOk = try {
             val pb = ProcessBuilder(
-                "ffmpeg", "-y", "-i", file.absolutePath,
+                "ffmpeg", "-y", "-fflags", "+genpts",
+                "-i", file.absolutePath,
                 "-c", "copy", "-movflags", "+faststart",
                 fixed.absolutePath
             )
@@ -515,7 +517,8 @@ class TelegramBotComponent(
 
             logger.info("Split: -segment_time {}s for {} parts (dur={}s, {}MB)", segTime, numParts, totalDur.toInt(), input.length() / 1_000_000)
             ProcessBuilder(
-                "ffmpeg", "-y", "-i", input.absolutePath,
+                "ffmpeg", "-y", "-fflags", "+genpts",
+                "-i", input.absolutePath,
                 "-map", "0",
                 "-c", "copy", "-f", "segment",
                 "-segment_time", segTime.toString(),
@@ -533,7 +536,8 @@ class TelegramBotComponent(
             if (parts.isEmpty()) {
                 logger.info("Split -segment_time produced no output, trying -segment_size")
                 ProcessBuilder(
-                    "ffmpeg", "-y", "-i", input.absolutePath,
+                    "ffmpeg", "-y", "-fflags", "+genpts",
+                    "-i", input.absolutePath,
                     "-map", "0",
                     "-c", "copy", "-f", "segment",
                     "-segment_size", targetSize.toString(),
@@ -553,7 +557,8 @@ class TelegramBotComponent(
             for (part in parts) {
                 val tmp = File(part.parentFile, ".${part.name}.fix")
                 val fixPb = ProcessBuilder(
-                    "ffmpeg", "-y", "-i", part.absolutePath,
+                    "ffmpeg", "-y", "-fflags", "+genpts",
+                    "-i", part.absolutePath,
                     "-map", "0", "-c", "copy",
                     "-movflags", "+faststart",
                     tmp.absolutePath
