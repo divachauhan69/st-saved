@@ -413,29 +413,65 @@ class TelegramBotComponent(
 
     private fun splitVideo(input: File, targetSize: Long = 35_000_000): List<File> {
         try {
-            if (input.length() <= targetSize) return listOf(input)
+            if (input.length() <= targetSize) return emptyList()
 
             val prefix = File(input.parentFile, "${input.nameWithoutExtension}_part_")
             val pattern = "${prefix.absolutePath}%03d.mp4"
 
-            val pb = ProcessBuilder(
+            // Try -segment_size first (size-based, most reliable)
+            logger.info("Split: trying -segment_size {} for {} ({} MB)", targetSize, input.name, input.length() / 1_000_000)
+            val segSizeProc = ProcessBuilder(
                 "ffmpeg", "-y", "-i", input.absolutePath,
                 "-map", "0",
                 "-c", "copy", "-f", "segment",
-                "-segment_size", "${targetSize / 1_000_000}M",
+                "-segment_size", targetSize.toString(),
                 "-reset_timestamps", "1",
                 pattern
-            )
-            pb.redirectErrorStream(true)
-            if (!pb.start().waitFor(300, TimeUnit.SECONDS)) {
-                logger.warn("Split ffmpeg timed out")
-                return listOf(input)
-            }
+            ).also { it.redirectErrorStream(true) }.start()
+            segSizeProc.waitFor(300, TimeUnit.SECONDS)
 
-            val parts = input.parentFile.listFiles()
+            var parts = input.parentFile.listFiles()
                 ?.filter { it.name.startsWith("${input.nameWithoutExtension}_part_") && it.name.endsWith(".mp4") }
                 ?.sortedBy { it.name }
                 ?: emptyList()
+
+            // If -segment_size produced no output, fall back to -segment_time with ffprobe
+            if (parts.isEmpty()) {
+                logger.info("Split -segment_size produced no output, trying -segment_time")
+                val probeCmd = ProcessBuilder(
+                    "ffprobe", "-v", "error",
+                    "-show_entries", "format=duration",
+                    "-of", "csv=p=0",
+                    input.absolutePath
+                ).also { it.redirectErrorStream(true) }.start()
+                val durStr = probeCmd.inputStream.bufferedReader().readText().trim()
+                probeCmd.waitFor(15, TimeUnit.SECONDS)
+                val totalDur = durStr.toDoubleOrNull()
+
+                val segTime = if (totalDur != null && totalDur > 0) {
+                    totalDur / ((input.length() + targetSize - 1) / targetSize)
+                } else {
+                    val estDur = input.length() * 8.0 / 2_500_000
+                    logger.info("ffprobe failed (dur='{}'), estimate: {}s", durStr, estDur.toInt())
+                    estDur / ((input.length() + targetSize - 1) / targetSize)
+                }
+
+                logger.info("Split fallback: -segment_time {} for {} parts", segTime, (input.length() + targetSize - 1) / targetSize)
+                ProcessBuilder(
+                    "ffmpeg", "-y", "-i", input.absolutePath,
+                    "-map", "0",
+                    "-c", "copy", "-f", "segment",
+                    "-segment_time", segTime.toString(),
+                    "-reset_timestamps", "1",
+                    pattern
+                ).also { it.redirectErrorStream(true) }.start()
+                    .waitFor(300, TimeUnit.SECONDS)
+
+                parts = input.parentFile.listFiles()
+                    ?.filter { it.name.startsWith("${input.nameWithoutExtension}_part_") && it.name.endsWith(".mp4") }
+                    ?.sortedBy { it.name }
+                    ?: emptyList()
+            }
 
             if (parts.isEmpty()) return emptyList()
 
