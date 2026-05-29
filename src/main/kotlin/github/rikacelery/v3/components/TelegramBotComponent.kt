@@ -185,7 +185,8 @@ class TelegramBotComponent(
                 SessionState.Fetching -> "🟡"
                 else -> ""
             }
-            "$armed$rec ${r.name} (${r.id}) [${r.quality}] ${r.status ?: "unknown"}"
+            val ap = if (r.autoPay) " 💰" else ""
+            "$armed$rec ${r.name} (${r.id}) [${r.quality}]${ap} ${r.status ?: "unknown"}"
         }
         sendMessage(chatId, "Rooms ($rooms):\n$text")
     }
@@ -220,6 +221,7 @@ class TelegramBotComponent(
                 appendLine("Segments: $success OK / $failed failed")
                 appendLine("Bytes: ${fmtBytes(bytes)}")
                 if (r.timeLimit != Duration.INFINITE) appendLine("Time limit: ${r.timeLimit}")
+                if (r.autoPay) appendLine("Autopay: ✅")
             }
         }
         sendMessage(chatId, text)
