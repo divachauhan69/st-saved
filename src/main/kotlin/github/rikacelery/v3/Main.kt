@@ -97,7 +97,7 @@ fun main(vararg args: String) {
 
             // 3. Components
             val metricComponent = MetricComponent(eventBus, appScope)
-            val configComponent = ConfigComponent(config, eventBus, appScope)
+            val configComponent = ConfigComponent(config, eventBus, appScope, mongo)
             val authComponent = AuthComponent(cli.getOptionValue("users", "users.txt"), eventBus, appScope, mongo)
             val roomComponent =
                 RoomComponent(ApiClient, config.listConfPath, config.platformHost, requestBus, eventBus, appScope, mongo)
