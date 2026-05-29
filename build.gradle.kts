@@ -34,7 +34,7 @@ dependencies {
 
     implementation("io.github.nomisrev:kotlinx-serialization-jsonpath:1.0.0")
     implementation("org.jsoup:jsoup:1.22.1")
-    implementation("org.jline:jline:3.30.6")
+    implementation("org.jline:jline:4.1.3")
     implementation("commons-cli:commons-cli:1.11.0")
     implementation("org.mongodb:mongodb-driver-sync:5.3.1")
 
