@@ -66,6 +66,7 @@ class TelegramBotComponent(
     }
     private val pollMutex = Mutex()
     private var lastUpdateId = 0L
+    private var botScope: CoroutineScope? = null
 
     val isEnabled: Boolean get() = token.isNotBlank()
 
@@ -74,6 +75,7 @@ class TelegramBotComponent(
             logger.warn("Telegram bot not configured (TELEGRAM_BOT_TOKEN missing)")
             return
         }
+        botScope = scope
         logger.info("Telegram bot started, allowed users: $allowedUsers, channel: $channelId")
         scope.launch { pollLoop() }
         if (channelId.isNotBlank()) {
@@ -632,7 +634,9 @@ class TelegramBotComponent(
                     appendLine("🎬 $roomName (#${msg.event.roomId})")
                     appendLine("📁 ${file.name}")
                 }
-                sendFileToChannel(file, caption.trimEnd())
+                botScope?.launch {
+                    sendFileToChannel(file, caption.trimEnd())
+                }
             }
         }
     }
