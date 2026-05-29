@@ -255,6 +255,7 @@ class TelegramBotComponent(
             val added = rooms.find { it.name == resp.name }
             if (added != null) requestBus.request<OkResponse>(ActivateRecordingCmd(added.id))
         }
+        eventBus.publish(PersistConfig)
         val flags = buildList {
             if (active) add("active")
             if (autopay) add("autopay")
@@ -267,6 +268,7 @@ class TelegramBotComponent(
             sendMessage(chatId, "Usage: /remove <name|id>"); return
         }
         requestBus.request<OkResponse>(RemoveRoom(id))
+        eventBus.publish(PersistConfig)
         sendMessage(chatId, "✅ Room removed: $id")
     }
 
@@ -275,6 +277,7 @@ class TelegramBotComponent(
             sendMessage(chatId, "Usage: /activate <name|id>"); return
         }
         requestBus.request<OkResponse>(ActivateRecordingCmd(id))
+        eventBus.publish(PersistConfig)
         sendMessage(chatId, "✅ Room activated (armed): $id")
     }
 
@@ -283,6 +286,7 @@ class TelegramBotComponent(
             sendMessage(chatId, "Usage: /deactivate <name|id>"); return
         }
         requestBus.request<OkResponse>(DeactivateCmd(id))
+        eventBus.publish(PersistConfig)
         sendMessage(chatId, "✅ Room deactivated: $id")
     }
 
@@ -295,6 +299,7 @@ class TelegramBotComponent(
         }
         val q = args.drop(1).joinToString(" ")
         requestBus.request<OkResponse>(SetRoomQuality(id, q))
+        eventBus.publish(PersistConfig)
         sendMessage(chatId, "✅ Quality set to $q for room $id")
     }
 
