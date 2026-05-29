@@ -169,12 +169,12 @@ fun main(vararg args: String) {
                 val mongoRooms = mongo.loadRooms()
                 if (mongoRooms.isNotEmpty()) {
                     roomComponent.replaceAll(mongoRooms)
-                    logger.info("Loaded ${mongoRooms.size} rooms from MongoDB")
+                    println("Loaded ${mongoRooms.size} rooms from MongoDB")
                 }
                 val mongoUsers = mongo.loadUsers()
                 if (mongoUsers.isNotEmpty()) {
                     authComponent.replaceAll(mongoUsers)
-                    logger.info("Loaded ${mongoUsers.size} users from MongoDB")
+                    println("Loaded ${mongoUsers.size} users from MongoDB")
                 }
             }
 

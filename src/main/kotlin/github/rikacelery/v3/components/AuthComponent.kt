@@ -51,7 +51,9 @@ class AuthComponent(
                     logger.warn("Failed to save users.txt: ${e.message}")
                 }
                 try {
-                    if (mongo.isConnected()) mongo.saveUsers(users.values.toList())
+                    if (mongo.isConnected()) {
+                        mongo.saveUsers(users.values.toList())
+                    }
                 } catch (e: Exception) {
                     logger.warn("Failed to save users to MongoDB: ${e.message}")
                 }

@@ -39,7 +39,7 @@ class MongoStore(private val uri: String?) {
     // ── Rooms ──
     suspend fun loadRooms(): List<Room> = withContext(Dispatchers.IO) {
         if (db == null) return@withContext emptyList()
-        val col = db.getCollection<Document>("rooms")
+        val col = db.getCollection("rooms")
         col.find().map { doc ->
             doc.remove("_id")
             json.decodeFromString<Room>(doc.toJson())
@@ -48,7 +48,7 @@ class MongoStore(private val uri: String?) {
 
     suspend fun saveRooms(rooms: List<Room>) = withContext(Dispatchers.IO) {
         if (db == null) return@withContext
-        val col = db.getCollection<Document>("rooms")
+        val col = db.getCollection("rooms")
         col.drop()
         if (rooms.isEmpty()) return@withContext
         val docs = rooms.map { room ->
@@ -62,7 +62,7 @@ class MongoStore(private val uri: String?) {
 
     suspend fun saveRoom(room: Room) = withContext(Dispatchers.IO) {
         if (db == null) return@withContext
-        val col = db.getCollection<Document>("rooms")
+        val col = db.getCollection("rooms")
         val doc = Document.parse(json.encodeToString(room))
         doc.put("_id", room.id)
         col.replaceOne(Document("_id", room.id), doc, ReplaceOptions().upsert(true))
@@ -70,13 +70,13 @@ class MongoStore(private val uri: String?) {
 
     suspend fun deleteRoom(roomId: Long) = withContext(Dispatchers.IO) {
         if (db == null) return@withContext
-        db.getCollection<Document>("rooms").deleteOne(Document("_id", roomId))
+        db.getCollection("rooms").deleteOne(Document("_id", roomId))
     }
 
     // ── Users ──
     suspend fun loadUsers(): List<User> = withContext(Dispatchers.IO) {
         if (db == null) return@withContext emptyList()
-        val col = db.getCollection<Document>("users")
+        val col = db.getCollection("users")
         col.find().map { doc ->
             User(
                 cookie = doc.getString("cookie") ?: "",
@@ -89,7 +89,7 @@ class MongoStore(private val uri: String?) {
 
     suspend fun saveUsers(users: List<User>) = withContext(Dispatchers.IO) {
         if (db == null) return@withContext
-        val col = db.getCollection<Document>("users")
+        val col = db.getCollection("users")
         col.drop()
         if (users.isEmpty()) return@withContext
         val docs = users.map { user ->
@@ -108,14 +108,14 @@ class MongoStore(private val uri: String?) {
     // ── Config KV ──
     suspend fun saveConfig(key: String, value: String) = withContext(Dispatchers.IO) {
         if (db == null) return@withContext
-        val col = db.getCollection<Document>("config")
+        val col = db.getCollection("config")
         col.replaceOne(Document("_id", key), Document("_id", key).append("value", value),
             ReplaceOptions().upsert(true))
     }
 
     suspend fun loadConfig(key: String): String? = withContext(Dispatchers.IO) {
         if (db == null) return@withContext null
-        val col = db.getCollection<Document>("config")
+        val col = db.getCollection("config")
         col.find(Document("_id", key)).firstOrNull()?.getString("value")
     }
 
