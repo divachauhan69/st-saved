@@ -158,7 +158,7 @@ class TelegramBotComponent(
     private suspend fun cmdHelp(chatId: Long) {
         sendMessage(chatId, """
             XhRec Bot Commands:
-            /add &lt;name&gt; [quality] [active] — Add room
+            /add &lt;name&gt; [quality] [active] [autopay] — Add room
             /remove &lt;name|id&gt; — Remove room
             /list — List all rooms
             /status [name] — Room status
@@ -227,19 +227,24 @@ class TelegramBotComponent(
 
     private suspend fun cmdAdd(chatId: Long, args: List<String>) {
         if (args.isEmpty()) {
-            sendMessage(chatId, "Usage: /add <name> [quality] [active]")
+            sendMessage(chatId, "Usage: /add <name> [quality] [active] [autopay]")
             return
         }
         val name = args[0]
         val quality = args.getOrElse(1) { "720p" }
         val active = args.getOrElse(2) { "" }.lowercase() in listOf("true", "active", "yes", "1")
-        val resp = requestBus.request<RoomNameResponse>(AddRoom(name, quality))
+        val autopay = args.getOrElse(3) { "" }.lowercase() in listOf("autopay", "true", "yes", "1")
+        val resp = requestBus.request<RoomNameResponse>(AddRoom(name, quality, autoPay = autopay))
         if (active) {
             val rooms = requestBus.request<List<Room>>(GetRooms)
             val added = rooms.find { it.name == resp.name }
             if (added != null) requestBus.request<OkResponse>(ActivateRecordingCmd(added.id))
         }
-        sendMessage(chatId, "✅ Room added: ${resp.name}${if (active) " (active)" else ""}")
+        val flags = buildList {
+            if (active) add("active")
+            if (autopay) add("autopay")
+        }
+        sendMessage(chatId, "✅ Room added: ${resp.name}${if (flags.isNotEmpty()) " (${flags.joinToString(", ")})" else ""}")
     }
 
     private suspend fun cmdRemove(chatId: Long, args: List<String>) {
