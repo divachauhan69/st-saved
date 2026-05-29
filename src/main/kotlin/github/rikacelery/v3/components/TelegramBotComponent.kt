@@ -344,19 +344,60 @@ class TelegramBotComponent(
     }
 
     private suspend fun sendVideoUrl(chatId: Long, file: File, caption: String) {
+        fixMeta(file)
         val publicBase = publicUrl.trimEnd('/')
         val fileUrl = "$publicBase/tmpfiles/${file.name}"
-        val resp = httpClient.post("$apiUrl/sendVideo") {
-            setBody(buildJsonObject {
-                put("chat_id", chatId)
-                put("video", fileUrl)
-                put("caption", caption)
-            })
-            contentType(ContentType.Application.Json)
-        }
-        if (!resp.status.isSuccess()) {
+        try {
+            val resp = httpClient.post("$apiUrl/sendVideo") {
+                setBody(buildJsonObject {
+                    put("chat_id", chatId)
+                    put("video", fileUrl)
+                    put("caption", caption)
+                })
+                contentType(ContentType.Application.Json)
+            }
+            if (resp.status.isSuccess()) return
             val body = resp.bodyAsText()
             logger.error("Telegram sendVideo URL returned ${resp.status}: $body")
+        } catch (e: Exception) {
+            logger.warn("Telegram URL send failed (${e.message}), trying direct upload...")
+        }
+        sendMessage(chatId, "⬆️ Direct upload for ${file.name}...")
+        uploadVideoDirectly(chatId, file, caption)
+    }
+
+    private fun fixMeta(file: File) {
+        try {
+            val tmp = File(file.parentFile, ".${file.name}.meta")
+            val pb = ProcessBuilder(
+                "ffmpeg", "-y", "-i", file.absolutePath,
+                "-map", "0", "-c", "copy",
+                "-movflags", "+faststart",
+                tmp.absolutePath
+            )
+            pb.redirectErrorStream(true)
+            if (pb.start().waitFor(60, TimeUnit.SECONDS) && tmp.exists() && tmp.length() > 0) {
+                tmp.renameTo(file)
+            }
+            tmp.delete()
+        } catch (_: Exception) { }
+    }
+
+    private suspend fun uploadVideoDirectly(chatId: Long, file: File, caption: String) {
+        val resp = httpClient.submitFormWithBinaryData(
+            url = "$apiUrl/sendVideo",
+            formData = formData {
+                append("chat_id", chatId)
+                append("caption", caption)
+                append("video", File(file.absolutePath).readBytes(), Headers.build {
+                    append(HttpHeaders.ContentType, "video/mp4")
+                    append(HttpHeaders.ContentDisposition, "filename=\"${file.name}\"")
+                })
+            }
+        )
+        if (!resp.status.isSuccess()) {
+            val body = resp.bodyAsText()
+            logger.error("Telegram sendVideo direct returned ${resp.status}: $body")
         }
     }
 
