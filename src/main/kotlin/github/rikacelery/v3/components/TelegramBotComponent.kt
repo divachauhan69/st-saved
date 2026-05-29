@@ -85,13 +85,21 @@ class TelegramBotComponent(
     }
 
     private suspend fun keepAwake() {
-        val url = "${publicUrl.trimEnd('/')}/health"
-        logger.info("Keep-awake pinging $url every 5 min")
+        val base = publicUrl.trimEnd('/')
+        val targets = listOf("$base/", "$base/health", "$base/dashboard")
+        logger.info("Keep-awake pinging every 1 min")
         while (true) {
-            delay(5.minutes)
-            try {
-                httpClient.get(url)
-            } catch (_: Exception) { }
+            delay(1.minutes)
+            for (url in targets) {
+                try {
+                    val conn = java.net.URL(url).openConnection() as java.net.HttpURLConnection
+                    conn.connectTimeout = 5000
+                    conn.readTimeout = 5000
+                    conn.requestMethod = "GET"
+                    conn.connect()
+                    conn.disconnect()
+                } catch (_: Exception) { }
+            }
         }
     }
 
