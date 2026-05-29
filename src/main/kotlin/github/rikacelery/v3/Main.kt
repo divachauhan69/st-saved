@@ -9,6 +9,7 @@ import github.rikacelery.v3.core.RequestBus
 import github.rikacelery.v3.data.SystemConfig
 import github.rikacelery.v3.hooks.EventHook
 import github.rikacelery.v3.m3u8.M3u8Parser
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.coroutineScope
@@ -55,7 +56,7 @@ fun main(vararg args: String) {
         return
     }
 
-    runBlocking {
+    runBlocking(Dispatchers.Default) {
         coroutineScope {
             val appScope = this
 

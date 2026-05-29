@@ -132,7 +132,7 @@ class WriterComponent(
 
                 // remux closed segment asynchronously to normalize timestamps
                 val roomId = active.roomId
-                scope.launch {
+                scope.launch(Dispatchers.IO) {
                     val remuxed = File(tmpDir, ".$segName.remux.mp4")
                     try {
                         val pb = ProcessBuilder(
@@ -192,7 +192,7 @@ class WriterComponent(
         hooks.forEach { it.afterFileClosed(roomId, finalFile) }
 
         // remux + publish async
-        scope.launch {
+        scope.launch(Dispatchers.IO) {
             val remuxed = File(tmpDir, ".$finalName.remux.mp4")
             try {
                 val pb = ProcessBuilder(
