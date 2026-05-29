@@ -7,12 +7,14 @@ import github.rikacelery.v3.data.StreamData
 import github.rikacelery.v3.data.StreamEnd
 import github.rikacelery.v3.data.StreamEvent
 import github.rikacelery.v3.data.StreamStart
+import github.rikacelery.v3.events.EndReason
 import github.rikacelery.v3.events.FileReady
 import github.rikacelery.v3.events.WriterFatal
 import github.rikacelery.v3.hooks.WriterHook
 import kotlinx.coroutines.*
 import java.io.File
 import java.io.FileOutputStream
+import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -20,25 +22,21 @@ import java.util.concurrent.ConcurrentHashMap
 
 sealed interface WriterMsg
 
-data class ActiveFile(
-    val file: File,
-    val eventFile: File,
-    val fos: FileOutputStream,
-    val eventFos: FileOutputStream,
+class ActiveFile(
+    var file: File,
+    var eventFile: File,
+    var fos: FileOutputStream,
+    var eventFos: FileOutputStream,
     val roomId: Long,
     val roomName: String,
     val startTime: Instant,
-    var bytesWritten: Long = 0
+    var bytesWritten: Long = 0,
+    var segmentIndex: Int = 0,
+    var initBytes: ByteArray? = null
 ) {
     fun dispose() {
-        try {
-            fos.close()
-        } catch (_: Exception) {
-        }
-        try {
-            eventFos.close()
-        } catch (_: Exception) {
-        }
+        try { fos.close() } catch (_: Exception) { }
+        try { eventFos.close() } catch (_: Exception) { }
         file.delete()
         eventFile.delete()
     }
@@ -48,6 +46,7 @@ class WriterComponent(
     private val dataChannel: DataChannel,
     private val tmpDir: File,
     private val hooks: List<WriterHook> = emptyList(),
+    private val segmentSize: Long = 35_000_000,
     eventBus: EventBus,
     parentScope: CoroutineScope
 ) : Actor<WriterMsg>("WriterComponent", eventBus, parentScope) {
@@ -72,11 +71,8 @@ class WriterComponent(
     override suspend fun handle(msg: WriterMsg) {}
 
     private suspend fun handleStreamStart(msg: StreamStart) {
-        val timestamp = timeFormatter.format(msg.startTime)
-        var path = "${tmpDir.absolutePath}/${msg.roomName}-$timestamp-init.mp4"
+        val path = partPath(msg.roomName, msg.startTime, 0)
         try {
-            hooks.forEach { path = it.beforeFileOpen(msg.roomId, path) }
-
             val file = File(path)
             file.parentFile?.mkdirs()
             val eventFile = File("$path.event")
@@ -100,7 +96,42 @@ class WriterComponent(
         try {
             var data = msg.data
             hooks.forEach { data = it.beforeWrite(msg.roomId, data) }
-            logger.trace("Receive {} {}", msg.roomId, msg.meta.url)
+
+            if (active.initBytes == null) {
+                active.initBytes = data.copyOf()
+            }
+
+            if (active.bytesWritten >= segmentSize && active.initBytes != null) {
+                active.fos.close()
+                active.eventFos.close()
+
+                val elapsed = Duration.between(active.startTime, Instant.now()).toMillis()
+                active.segmentIndex++
+                val segName = segFileName(active.roomName, active.startTime, active.segmentIndex, elapsed)
+                val segFile = File(tmpDir, segName)
+                active.file.renameTo(segFile)
+
+                val segEventFile = File(tmpDir, "$segName.event")
+                active.eventFile.renameTo(segEventFile)
+                if (segEventFile.length() == 0L) segEventFile.delete()
+
+                eventBus.publish(FileReady(active.roomId, segFile, EndReason.StreamEnd))
+                logger.info("Segment {}: {} ({}MB)", active.segmentIndex, segName, active.bytesWritten / 1_000_000)
+
+                val newPath = partPath(active.roomName, active.startTime, active.segmentIndex)
+                val newFile = File(newPath)
+                val newEventFile = File("$newPath.event")
+                val newFos = FileOutputStream(newFile)
+                val newEventFos = FileOutputStream(newEventFile)
+                newFos.write(active.initBytes!!)
+                active.file = newFile
+                active.eventFile = newEventFile
+                active.fos = newFos
+                active.eventFos = newEventFos
+                active.bytesWritten = active.initBytes!!.size.toLong()
+                logger.info("Opened segment {}: {}", active.segmentIndex, newPath)
+            }
+
             withContext(Dispatchers.IO) {
                 active.fos.write(data)
             }
@@ -123,33 +154,29 @@ class WriterComponent(
                 active.fos.close()
                 active.eventFos.close()
 
-                val endTime = Instant.now()
-            val durationMs = java.time.Duration.between(active.startTime, endTime).toMillis()
-            val durFmt = formatDurationHM(durationMs)
-            val finalName = "${active.roomName}-${timeFormatter.format(active.startTime)}-${durFmt}.mp4"
-            val finalFile = File(tmpDir, finalName)
-            active.file.renameTo(finalFile)
+                val elapsed = Duration.between(active.startTime, Instant.now()).toMillis()
+                val finalName = segFileName(active.roomName, active.startTime, active.segmentIndex, elapsed)
+                val finalFile = File(tmpDir, finalName)
+                active.file.renameTo(finalFile)
 
-            val finalEvent = File(tmpDir, "$finalName.event")
-            active.eventFile.renameTo(finalEvent)
+                val finalEvent = File(tmpDir, "$finalName.event")
+                active.eventFile.renameTo(finalEvent)
+                if (finalEvent.length() == 0L) finalEvent.delete()
 
-            if (finalEvent.length() == 0L) {
-                finalEvent.delete()
+                if (finalFile.length() == 0L) {
+                    finalFile.delete()
+                    logger.info("Remove empty file: ${finalFile.absolutePath}, reason=${msg.reason}")
+                    return@withContext
+                }
+
+                hooks.forEach { it.afterFileClosed(msg.roomId, finalFile) }
+                eventBus.publish(FileReady(msg.roomId, finalFile, msg.reason))
+                logger.info("Closed file: ${finalFile.absolutePath}, reason=${msg.reason}")
+            } catch (e: Exception) {
+                logger.error("Failed to close file for room ${msg.roomId}: ${e.message}", e)
+                eventBus.publish(WriterFatal(msg.roomId, e.message ?: "Unknown error"))
+                active.dispose()
             }
-            if (finalFile.length() == 0L) {
-                finalFile.delete()
-                logger.info("Remove empty file: ${finalFile.absolutePath}, reason=${msg.reason}")
-                return@withContext
-            }
-
-            hooks.forEach { it.afterFileClosed(msg.roomId, finalFile) }
-            eventBus.publish(FileReady(msg.roomId, finalFile, msg.reason))
-            logger.info("Closed file: ${finalFile.absolutePath}, reason=${msg.reason}")
-        } catch (e: Exception) {
-            logger.error("Failed to close file for room ${msg.roomId}: ${e.message}", e)
-            eventBus.publish(WriterFatal(msg.roomId, e.message ?: "Unknown error"))
-            active.dispose()
-        }
         }
     }
 
@@ -164,6 +191,17 @@ class WriterComponent(
             eventBus.publish(WriterFatal(msg.roomId, e.message ?: "Unknown error"))
             files.remove(msg.roomId)?.dispose()
         }
+    }
+
+    private fun partPath(roomName: String, startTime: Instant, segIdx: Int): String {
+        val ts = timeFormatter.format(startTime)
+        return "${tmpDir.absolutePath}/${roomName}-$ts-seg${"%03d".format(segIdx)}.part"
+    }
+
+    private fun segFileName(roomName: String, startTime: Instant, segIdx: Int, durationMs: Long): String {
+        val ts = timeFormatter.format(startTime)
+        val dur = formatDurationHM(durationMs)
+        return "${roomName}-$ts-seg${"%03d".format(segIdx)}-$dur.mp4"
     }
 
     private fun formatDurationHM(ms: Long): String {
