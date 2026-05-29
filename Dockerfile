@@ -15,5 +15,6 @@ EXPOSE 8090
 ENV TELEGRAM_BOT_TOKEN=""
 ENV TELEGRAM_CHANNEL_ID=""
 ENV TELEGRAM_ALLOWED_USERS=""
+ENV MONGODB_URI=""
 VOLUME /data/out /data/tmp /data/logs
 CMD ["java", "-jar", "XhRec-all.jar", "-p", "8090", "-o", "out", "-t", "tmp"]
