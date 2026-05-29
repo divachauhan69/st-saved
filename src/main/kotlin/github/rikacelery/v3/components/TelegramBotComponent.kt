@@ -23,6 +23,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
 import okhttp3.OkHttpClient
 import java.io.File
+import java.io.InputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.util.concurrent.TimeUnit
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
@@ -393,21 +396,48 @@ class TelegramBotComponent(
         } catch (_: Exception) { }
     }
 
-    private suspend fun uploadVideoDirectly(chatId: Long, file: File, caption: String) {
-        val resp = httpClient.submitFormWithBinaryData(
-            url = "$apiUrl/sendVideo",
-            formData = formData {
-                append("chat_id", chatId)
-                append("caption", caption)
-                append("video", file.readBytes(), Headers.build {
-                    append(HttpHeaders.ContentType, "video/mp4")
-                    append(HttpHeaders.ContentDisposition, "filename=\"${file.name}\"")
-                })
+    private suspend fun uploadVideoDirectly(chatId: Long, file: File, caption: String) = withContext(Dispatchers.IO) {
+        val boundary = "----" + System.currentTimeMillis()
+        val url = URL("$apiUrl/sendVideo")
+        val conn = url.openConnection() as HttpURLConnection
+        try {
+            conn.requestMethod = "POST"
+            conn.setRequestProperty("Content-Type", "multipart/form-data; boundary=$boundary")
+            conn.doOutput = true
+            conn.connectTimeout = 30000
+            conn.readTimeout = 300000
+            conn.setChunkedStreamingMode(65536)
+
+            val os = conn.outputStream
+            val crlf = "\r\n"
+
+            os.write("--$boundary$crlf".toByteArray())
+            os.write("Content-Disposition: form-data; name=\"chat_id\"$crlf$crlf".toByteArray())
+            os.write("$chatId$crlf".toByteArray())
+
+            os.write("--$boundary$crlf".toByteArray())
+            os.write("Content-Disposition: form-data; name=\"caption\"$crlf$crlf".toByteArray())
+            os.write("$caption$crlf".toByteArray())
+
+            // video file
+            os.write("--$boundary$crlf".toByteArray())
+            os.write("Content-Disposition: form-data; name=\"video\"; filename=\"${file.name}\"$crlf".toByteArray())
+            os.write("Content-Type: video/mp4$crlf$crlf".toByteArray())
+
+            file.inputStream().use { input -> input.copyTo(os, 65536) }
+            os.write("$crlf--$boundary--$crlf".toByteArray())
+            os.flush()
+
+            val responseCode = conn.responseCode
+            if (responseCode != 200) {
+                val errorBody = try { conn.errorStream?.bufferedReader()?.readText() ?: "" } catch (_: Exception) { "" }
+                logger.error("Telegram sendVideo returned $responseCode: $errorBody")
             }
-        )
-        if (!resp.status.isSuccess()) {
-            val body = resp.bodyAsText()
-            logger.error("Telegram sendVideo returned ${resp.status}: $body")
+        } catch (e: Exception) {
+            logger.error("Telegram upload failed: ${e.message}")
+            throw e
+        } finally {
+            conn.disconnect()
         }
     }
 
@@ -418,50 +448,41 @@ class TelegramBotComponent(
             val prefix = File(input.parentFile, "${input.nameWithoutExtension}_part_")
             val pattern = "${prefix.absolutePath}%03d.mp4"
 
-            // Try -segment_size first (size-based, most reliable)
-            logger.info("Split: trying -segment_size {} for {} ({} MB)", targetSize, input.name, input.length() / 1_000_000)
-            val segSizeProc = ProcessBuilder(
+            // Try -segment_time first (more reliable for mp4)
+            val numParts = (input.length() + targetSize - 1) / targetSize
+            val totalDur = getDuration(input)
+            val segTime = if (totalDur > 0) {
+                totalDur / numParts
+            } else {
+                val estDur = input.length() * 8.0 / 2_500_000
+                logger.info("ffprobe failed for {}, estimate: {}s", input.name, estDur.toInt())
+                estDur / numParts
+            }
+
+            logger.info("Split: -segment_time {}s for {} parts (dur={}s, {}MB)", segTime, numParts, totalDur.toInt(), input.length() / 1_000_000)
+            ProcessBuilder(
                 "ffmpeg", "-y", "-i", input.absolutePath,
                 "-map", "0",
                 "-c", "copy", "-f", "segment",
-                "-segment_size", targetSize.toString(),
+                "-segment_time", segTime.toString(),
                 "-reset_timestamps", "1",
                 pattern
             ).also { it.redirectErrorStream(true) }.start()
-            segSizeProc.waitFor(300, TimeUnit.SECONDS)
+                .waitFor(300, TimeUnit.SECONDS)
 
             var parts = input.parentFile.listFiles()
                 ?.filter { it.name.startsWith("${input.nameWithoutExtension}_part_") && it.name.endsWith(".mp4") }
                 ?.sortedBy { it.name }
                 ?: emptyList()
 
-            // If -segment_size produced no output, fall back to -segment_time with ffprobe
+            // If -segment_time produced no output, fall back to -segment_size
             if (parts.isEmpty()) {
-                logger.info("Split -segment_size produced no output, trying -segment_time")
-                val probeCmd = ProcessBuilder(
-                    "ffprobe", "-v", "error",
-                    "-show_entries", "format=duration",
-                    "-of", "csv=p=0",
-                    input.absolutePath
-                ).also { it.redirectErrorStream(true) }.start()
-                val durStr = probeCmd.inputStream.bufferedReader().readText().trim()
-                probeCmd.waitFor(15, TimeUnit.SECONDS)
-                val totalDur = durStr.toDoubleOrNull()
-
-                val segTime = if (totalDur != null && totalDur > 0) {
-                    totalDur / ((input.length() + targetSize - 1) / targetSize)
-                } else {
-                    val estDur = input.length() * 8.0 / 2_500_000
-                    logger.info("ffprobe failed (dur='{}'), estimate: {}s", durStr, estDur.toInt())
-                    estDur / ((input.length() + targetSize - 1) / targetSize)
-                }
-
-                logger.info("Split fallback: -segment_time {} for {} parts", segTime, (input.length() + targetSize - 1) / targetSize)
+                logger.info("Split -segment_time produced no output, trying -segment_size")
                 ProcessBuilder(
                     "ffmpeg", "-y", "-i", input.absolutePath,
                     "-map", "0",
                     "-c", "copy", "-f", "segment",
-                    "-segment_time", segTime.toString(),
+                    "-segment_size", targetSize.toString(),
                     "-reset_timestamps", "1",
                     pattern
                 ).also { it.redirectErrorStream(true) }.start()
@@ -495,6 +516,21 @@ class TelegramBotComponent(
             logger.error("Split failed: ${e.message}")
             return emptyList()
         }
+    }
+
+    private fun getDuration(file: File): Double {
+        try {
+            val pb = ProcessBuilder(
+                "ffprobe", "-v", "error",
+                "-show_entries", "format=duration",
+                "-of", "csv=p=0",
+                file.absolutePath
+            ).also { it.redirectErrorStream(true) }
+            val proc = pb.start()
+            val dur = proc.inputStream.bufferedReader().readText().trim()
+            proc.waitFor(5, TimeUnit.SECONDS)
+            return dur.toDoubleOrNull() ?: 0.0
+        } catch (_: Exception) { return 0.0 }
     }
 
     private fun fmtBytes(n: Long): String = when {
