@@ -76,6 +76,20 @@ class TelegramBotComponent(
         if (channelId.isNotBlank()) {
             subscribe<FileProcessed>(FileProcessed::class)
         }
+        if (publicUrl.isNotBlank()) {
+            scope.launch { keepAwake() }
+        }
+    }
+
+    private suspend fun keepAwake() {
+        val url = "${publicUrl.trimEnd('/')}/health"
+        logger.info("Keep-awake pinging $url every 5 min")
+        while (true) {
+            delay(5.minutes)
+            try {
+                httpClient.get(url)
+            } catch (_: Exception) { }
+        }
     }
 
     override suspend fun wrapEvent(event: Any): TelegramMsg? = when (event) {

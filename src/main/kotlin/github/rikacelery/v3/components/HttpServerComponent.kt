@@ -54,6 +54,9 @@ class HttpServerComponent(
                 get("/") {
                     call.respondText(this::class.java.getResource("/vue.html")!!.readText(), ContentType.Text.Html)
                 }
+                get("/health") {
+                    call.respondText("OK", ContentType.Text.Plain)
+                }
                 get("/add") {
                     val name = call.request.queryParameters["name"] ?: ""
                     if (name.isBlank()) return@get call.respondText("Missing name", status = HttpStatusCode.BadRequest)
