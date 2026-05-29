@@ -23,14 +23,20 @@ class MongoStore(private val uri: String?) {
         if (uri.isNullOrBlank()) {
             client = null; db = null
             logger.info("MongoDB not configured")
-        } else try {
-            client = MongoClients.create(uri)
-            db = client.getDatabase("st-saved")
-            db.runCommand(Document("ping", 1))
-            logger.info("MongoDB connected")
-        } catch (e: Exception) {
-            logger.error("MongoDB connection failed: ${e.message}")
-            throw e
+        } else {
+            var c: MongoClient? = null
+            var d: MongoDatabase? = null
+            try {
+                c = MongoClients.create(uri)
+                d = c.getDatabase("st-saved")
+                d.runCommand(Document("ping", 1))
+                logger.info("MongoDB connected")
+            } catch (e: Exception) {
+                logger.error("MongoDB connection failed (app will work without MongoDB): ${e.message}")
+                try { c?.close() } catch (_: Exception) { }
+                c = null; d = null
+            }
+            client = c; db = d
         }
     }
 
