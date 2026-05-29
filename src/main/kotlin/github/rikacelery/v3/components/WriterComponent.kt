@@ -102,7 +102,18 @@ class WriterComponent(
                 active.initBytes = data.copyOf()
             }
 
-            if (active.bytesWritten >= segmentSize && active.initBytes != null) {
+            withContext(Dispatchers.IO) {
+                active.fos.write(data)
+            }
+            active.bytesWritten += data.size
+
+            // check both in-memory counter and actual file length to keep segments at ~35MB
+            val actualLen = withContext(Dispatchers.IO) {
+                try { active.file.length() } catch (_: Exception) { 0L }
+            }
+            val effectiveLen = maxOf(active.bytesWritten, actualLen)
+
+            if (effectiveLen >= segmentSize && active.initBytes != null) {
                 active.fos.close()
                 active.eventFos.close()
 
@@ -128,7 +139,7 @@ class WriterComponent(
                 active.fos = newFos
                 active.eventFos = newEventFos
                 active.bytesWritten = active.initBytes!!.size.toLong()
-                logger.info("Segment {} closed ({}MB), opening {}...", segIdx, active.bytesWritten / 1_000_000, newPath)
+                logger.info("Segment {} closed ({}MB, actual={}MB), opening {}...", segIdx, active.bytesWritten / 1_000_000, actualLen / 1_000_000, newPath)
 
                 // remux closed segment asynchronously to normalize timestamps
                 val roomId = active.roomId
@@ -151,11 +162,6 @@ class WriterComponent(
                     logger.info("Segment {} remuxed + published: {} ({}MB)", segIdx, segName, segFile.length() / 1_000_000)
                 }
             }
-
-            withContext(Dispatchers.IO) {
-                active.fos.write(data)
-            }
-            active.bytesWritten += data.size
         } catch (e: Exception) {
             logger.error("Failed to write data for room ${msg.roomId}: ${e.message}", e)
             eventBus.publish(WriterFatal(msg.roomId, e.message ?: "Unknown error"))
