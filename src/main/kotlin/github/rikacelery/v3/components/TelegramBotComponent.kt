@@ -323,7 +323,7 @@ class TelegramBotComponent(
             )
             pb.redirectErrorStream(true)
             val proc = pb.start()
-            proc.waitFor(120, java.util.concurrent.TimeUnit.SECONDS)
+            proc.waitFor(600, java.util.concurrent.TimeUnit.SECONDS)
             if (output.exists() && output.length() > 0 && output.length() < input.length()) {
                 logger.info("Compressed {} ({} -> {})", input.name, fmtBytes(input.length()), fmtBytes(output.length()))
                 return output
