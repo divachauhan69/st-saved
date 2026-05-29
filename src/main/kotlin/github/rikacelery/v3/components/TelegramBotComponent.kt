@@ -8,6 +8,7 @@ import github.rikacelery.v3.events.*
 import io.ktor.client.*
 import io.ktor.client.call.*
 import io.ktor.client.engine.okhttp.*
+import io.ktor.client.plugins.*
 import io.ktor.client.plugins.contentnegotiation.*
 import io.ktor.client.request.*
 import io.ktor.client.request.forms.*
@@ -18,7 +19,9 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.*
+import okhttp3.OkHttpClient
 import java.io.File
+import java.util.concurrent.TimeUnit
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.minutes
 import kotlin.time.Duration.Companion.seconds
@@ -41,9 +44,18 @@ class TelegramBotComponent(
     private val apiUrl = "https://api.telegram.org/bot$token"
     private val httpClient = HttpClient(OkHttp) {
         install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
-        install(io.ktor.client.plugins.HttpTimeout) {
+        install(HttpTimeout) {
             requestTimeoutMillis = 300000
+            connectTimeoutMillis = 30000
             socketTimeoutMillis = 300000
+        }
+        engine {
+            config {
+                connectTimeout(30, TimeUnit.SECONDS)
+                readTimeout(300, TimeUnit.SECONDS)
+                writeTimeout(300, TimeUnit.SECONDS)
+                retryOnConnectionFailure(false)
+            }
         }
     }
     private val pollMutex = Mutex()
@@ -298,7 +310,7 @@ class TelegramBotComponent(
     }
 
     private suspend fun uploadVideo(chatId: Long, file: File, caption: String) {
-        httpClient.submitFormWithBinaryData(
+        val resp = httpClient.submitFormWithBinaryData(
             url = "$apiUrl/sendVideo",
             formData = formData {
                 append("chat_id", chatId)
@@ -309,6 +321,10 @@ class TelegramBotComponent(
                 })
             }
         )
+        if (!resp.status.isSuccess()) {
+            val body = resp.bodyAsText()
+            logger.error("Telegram sendVideo returned ${resp.status}: $body")
+        }
     }
 
     private fun splitVideo(input: File): List<File> {
