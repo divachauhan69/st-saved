@@ -331,6 +331,10 @@ class TelegramBotComponent(
             logger.warn("TELEGRAM_CHANNEL_ID not set, skipping upload of {}", file.name)
             return
         }
+        if (!file.exists() || file.length() == 0L) {
+            logger.warn("File {} not found or empty, skipping", file.name)
+            return
+        }
         try {
             if (file.length() > 45_000_000) {
                 sendMessage(channelId, "✂️ Splitting ${file.name} (${fmtBytes(file.length())}) into parts...")
@@ -368,7 +372,21 @@ class TelegramBotComponent(
                 }
                 sendMessage(channelId, msg)
             } else {
-                uploadVideoDirectly(channelId, file, caption)
+                var lastErr: Exception? = null
+                for (attempt in 1..3) {
+                    try {
+                        uploadVideoDirectly(channelId, file, caption)
+                        lastErr = null
+                        break
+                    } catch (e: Exception) {
+                        lastErr = e
+                        logger.warn("Upload attempt $attempt/3 failed for {}: {}", file.name, e.message)
+                        if (attempt < 3) delay(5.seconds * attempt)
+                    }
+                }
+                if (lastErr != null) {
+                    sendMessage(channelId, "⚠️ Upload failed for ${file.name} after 3 attempts")
+                }
             }
             logger.info("Processed {} for Telegram channel {}", file.name, channelId)
         } catch (e: Exception) {
@@ -448,16 +466,29 @@ class TelegramBotComponent(
         if (remuxOk) logger.info("Remuxed {} for upload ({}MB)", file.name, uploadFile.length() / 1_000_000)
 
         val thumbFile = File(file.parentFile, ".${file.name}.thumb.jpg")
-        val thumbOk = try {
+        var thumbOk = false
+        try {
             val pb = ProcessBuilder(
-                "ffmpeg", "-y", "-i", uploadFile.absolutePath,
-                "-vf", "select=eq(n\\,0)", "-vframes", "1",
-                "-q:v", "2",
+                "ffmpeg", "-y", "-ss", "0",
+                "-i", uploadFile.absolutePath,
+                "-vframes", "1", "-q:v", "2",
                 thumbFile.absolutePath
             )
             pb.redirectErrorStream(true)
-            pb.start().waitFor(30, TimeUnit.SECONDS) && thumbFile.exists() && thumbFile.length() > 0
-        } catch (_: Exception) { false }
+            thumbOk = pb.start().waitFor(30, TimeUnit.SECONDS) && thumbFile.exists() && thumbFile.length() > 0
+        } catch (_: Exception) { }
+        if (!thumbOk) {
+            try {
+                thumbFile.delete()
+                val pb = ProcessBuilder(
+                    "ffmpeg", "-y", "-i", uploadFile.absolutePath,
+                    "-vf", "thumbnail", "-frames:v", "1", "-q:v", "2",
+                    thumbFile.absolutePath
+                )
+                pb.redirectErrorStream(true)
+                thumbOk = pb.start().waitFor(30, TimeUnit.SECONDS) && thumbFile.exists() && thumbFile.length() > 0
+            } catch (_: Exception) { }
+        }
         if (thumbOk) logger.info("Thumbnail extracted: {} ({}KB)", thumbFile.name, thumbFile.length() / 1024)
 
         val boundary = "----" + System.currentTimeMillis()
