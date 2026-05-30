@@ -47,7 +47,7 @@ class TelegramBotComponent(
     parentScope: CoroutineScope
 ) : Actor<TelegramMsg>("TelegramBot", eventBus, parentScope) {
     private val apiUrl = "https://api.telegram.org/bot$token"
-    private val uploadSemaphore = Semaphore(3)
+    private val uploadSemaphore = Semaphore(1)
     private val httpClient = HttpClient(OkHttp) {
         install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
         install(HttpTimeout) {
@@ -452,28 +452,12 @@ class TelegramBotComponent(
     }
 
     private suspend fun uploadVideoDirectly(chatId: String, file: File, caption: String) = withContext(Dispatchers.IO) {
-        // Remux with +faststart for moov-at-front (WriterComponent already does this,
-        // but do it here too in case Writer remux was skipped)
-        val fixed = File(file.parentFile, ".${file.name}.fixed.mp4")
-        val remuxOk = try {
-            val pb = ProcessBuilder(
-                "ffmpeg", "-y", "-fflags", "+genpts",
-                "-i", file.absolutePath,
-                "-c", "copy", "-movflags", "+faststart",
-                fixed.absolutePath
-            )
-            pb.redirectErrorStream(true)
-            pb.start().waitFor(60, TimeUnit.SECONDS) && fixed.exists() && fixed.length() > 0
-        } catch (_: Exception) { false }
-        val uploadFile = if (remuxOk) fixed else file
-        if (remuxOk) logger.info("Remuxed {} for upload ({}MB)", file.name, uploadFile.length() / 1_000_000)
-
         val thumbFile = File(file.parentFile, ".${file.name}.thumb.jpg")
         var thumbOk = false
         try {
             val pb = ProcessBuilder(
                 "ffmpeg", "-y", "-skip_frame", "nokey",
-                "-i", uploadFile.absolutePath,
+                "-i", file.absolutePath,
                 "-vframes", "1", "-q:v", "2",
                 thumbFile.absolutePath
             )
@@ -484,7 +468,7 @@ class TelegramBotComponent(
             try {
                 thumbFile.delete()
                 val pb = ProcessBuilder(
-                    "ffmpeg", "-y", "-i", uploadFile.absolutePath,
+                    "ffmpeg", "-y", "-i", file.absolutePath,
                     "-vf", "select=eq(n\\,0)", "-vframes", "1", "-q:v", "2",
                     thumbFile.absolutePath
                 )
@@ -532,7 +516,7 @@ class TelegramBotComponent(
             os.write("Content-Disposition: form-data; name=\"video\"; filename=\"${file.name}\"$crlf".toByteArray())
             os.write("Content-Type: video/mp4$crlf$crlf".toByteArray())
 
-            uploadFile.inputStream().use { input -> input.copyTo(os, 65536) }
+            file.inputStream().use { input -> input.copyTo(os, 65536) }
             os.write("$crlf--$boundary--$crlf".toByteArray())
             os.flush()
 
@@ -553,7 +537,6 @@ class TelegramBotComponent(
             throw e
         } finally {
             conn.disconnect()
-            if (remuxOk) fixed.delete()
             if (thumbOk) thumbFile.delete()
         }
     }

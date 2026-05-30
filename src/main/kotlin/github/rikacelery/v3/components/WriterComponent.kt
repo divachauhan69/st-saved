@@ -20,6 +20,8 @@ import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 
 sealed interface WriterMsg
 
@@ -53,6 +55,7 @@ class WriterComponent(
 ) : Actor<WriterMsg>("WriterComponent", eventBus, parentScope) {
 
     private val files = ConcurrentHashMap<Long, ActiveFile>()
+    private val remuxSemaphore = Semaphore(2)
     private val timeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd-HHmmss")
         .withZone(ZoneId.systemDefault())
 
@@ -161,23 +164,25 @@ class WriterComponent(
 
                 // remux closed segment asynchronously to normalize timestamps
                 val roomId = active.roomId
-                scope.launch(Dispatchers.IO) {
-                    val remuxed = File(tmpDir, ".$segName.remux.mp4")
-                    try {
-                        val pb = ProcessBuilder(
-                            "ffmpeg", "-y", "-fflags", "+genpts", "-reset_timestamps", "1",
-                            "-i", segFile.absolutePath,
-                            "-c", "copy", "-movflags", "+faststart",
-                            remuxed.absolutePath
-                        )
-                        pb.redirectErrorStream(true)
-                        if (pb.start().waitFor(60, TimeUnit.SECONDS) && remuxed.exists() && remuxed.length() > 0) {
-                            remuxed.renameTo(segFile)
-                        }
-                    } catch (_: Exception) { }
-                    remuxed.delete()
-                    eventBus.publish(FileReady(roomId, segFile, EndReason.StreamEnd))
-                    logger.info("REPUBLISH: segIdx={}, file={} ({}MB)", segIdx, segName, segFile.length() / 1_000_000)
+                scope.launch(Dispatchers.IO + NonCancellable) {
+                    remuxSemaphore.withPermit {
+                        val remuxed = File(tmpDir, ".$segName.remux.mp4")
+                        try {
+                            val pb = ProcessBuilder(
+                                "ffmpeg", "-y", "-fflags", "+genpts", "-reset_timestamps", "1",
+                                "-i", segFile.absolutePath,
+                                "-c", "copy", "-movflags", "+faststart",
+                                remuxed.absolutePath
+                            )
+                            pb.redirectErrorStream(true)
+                            if (pb.start().waitFor(60, TimeUnit.SECONDS) && remuxed.exists() && remuxed.length() > 0) {
+                                remuxed.renameTo(segFile)
+                            }
+                        } catch (_: Exception) { }
+                        remuxed.delete()
+                        eventBus.publish(FileReady(roomId, segFile, EndReason.StreamEnd))
+                        logger.info("REPUBLISH: segIdx={}, file={} ({}MB)", segIdx, segName, segFile.length() / 1_000_000)
+                    }
                 }
             }
         } catch (e: Exception) {
@@ -220,23 +225,25 @@ class WriterComponent(
         hooks.forEach { it.afterFileClosed(roomId, finalFile) }
 
         // remux + publish async
-        scope.launch(Dispatchers.IO) {
-            val remuxed = File(tmpDir, ".$finalName.remux.mp4")
-            try {
-                val pb = ProcessBuilder(
-                    "ffmpeg", "-y", "-fflags", "+genpts", "-reset_timestamps", "1",
-                    "-i", finalFile.absolutePath,
-                    "-c", "copy", "-movflags", "+faststart",
-                    remuxed.absolutePath
-                )
-                pb.redirectErrorStream(true)
-                if (pb.start().waitFor(60, TimeUnit.SECONDS) && remuxed.exists() && remuxed.length() > 0) {
-                    remuxed.renameTo(finalFile)
-                }
-            } catch (_: Exception) { }
-            remuxed.delete()
-            eventBus.publish(FileReady(roomId, finalFile, msg.reason))
-            logger.info("Closed + remuxed: ${finalFile.absolutePath}, reason=${msg.reason}")
+        scope.launch(Dispatchers.IO + NonCancellable) {
+            remuxSemaphore.withPermit {
+                val remuxed = File(tmpDir, ".$finalName.remux.mp4")
+                try {
+                    val pb = ProcessBuilder(
+                        "ffmpeg", "-y", "-fflags", "+genpts", "-reset_timestamps", "1",
+                        "-i", finalFile.absolutePath,
+                        "-c", "copy", "-movflags", "+faststart",
+                        remuxed.absolutePath
+                    )
+                    pb.redirectErrorStream(true)
+                    if (pb.start().waitFor(60, TimeUnit.SECONDS) && remuxed.exists() && remuxed.length() > 0) {
+                        remuxed.renameTo(finalFile)
+                    }
+                } catch (_: Exception) { }
+                remuxed.delete()
+                eventBus.publish(FileReady(roomId, finalFile, msg.reason))
+                logger.info("Closed + remuxed: ${finalFile.absolutePath}, reason=${msg.reason}")
+            }
         }
     }
 
