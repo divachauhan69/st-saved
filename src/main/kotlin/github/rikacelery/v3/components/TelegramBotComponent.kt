@@ -336,60 +336,63 @@ class TelegramBotComponent(
             return
         }
         try {
-            if (file.length() > 45_000_000) {
-                sendMessage(channelId, "✂️ Splitting ${file.name} (${fmtBytes(file.length())}) into parts...")
-                val parts = splitVideo(file)
-                if (parts.isEmpty()) {
-                    sendMessage(channelId, "⚠️ Split failed, trying URL fallback for ${file.name}...")
-                    sendViaUrl(channelId, file, caption)
-                    return
-                }
-                sendMessage(channelId, "⬆️ Uploading ${parts.size} parts...")
-                var ok = 0; var fail = 0
-                coroutineScope {
-                    parts.mapIndexed { i, part ->
-                        async {
-                            uploadSemaphore.acquire()
-                            try {
-                                val partCaption = "$caption\nPart ${i + 1}/${parts.size}"
-                                uploadVideoDirectly(channelId, part, partCaption)
-                                ok++
-                            } catch (e: Exception) {
-                                fail++
-                                logger.error("Part ${i+1} failed: ${e.message}")
-                                sendMessage(channelId, "⚠️ Part ${i+1} failed (${e.message})")
-                            } finally {
-                                uploadSemaphore.release()
-                                part.delete()
+            uploadSemaphore.acquire()
+            try {
+                if (file.length() > 45_000_000) {
+                    sendMessage(channelId, "✂️ Splitting ${file.name} (${fmtBytes(file.length())}) into parts...")
+                    val parts = splitVideo(file)
+                    if (parts.isEmpty()) {
+                        sendMessage(channelId, "⚠️ Split failed, trying URL fallback for ${file.name}...")
+                        sendViaUrl(channelId, file, caption)
+                        return
+                    }
+                    sendMessage(channelId, "⬆️ Uploading ${parts.size} parts...")
+                    var ok = 0; var fail = 0
+                    coroutineScope {
+                        parts.mapIndexed { i, part ->
+                            async {
+                                try {
+                                    val partCaption = "$caption\nPart ${i + 1}/${parts.size}"
+                                    uploadVideoDirectly(channelId, part, partCaption)
+                                    ok++
+                                } catch (e: Exception) {
+                                    fail++
+                                    logger.error("Part ${i+1} failed: ${e.message}")
+                                    sendMessage(channelId, "⚠️ Part ${i+1} failed (${e.message})")
+                                } finally {
+                                    part.delete()
+                                }
                             }
+                        }.awaitAll()
+                    }
+                    val msg = buildString {
+                        append("✅ ${ok}/${parts.size} parts uploaded")
+                        if (fail > 0) append(" ($fail failed)")
+                        append(" for ${file.name}")
+                    }
+                    sendMessage(channelId, msg)
+                    file.delete()
+                } else {
+                    var lastErr: Exception? = null
+                    for (attempt in 1..5) {
+                        try {
+                            uploadVideoDirectly(channelId, file, caption)
+                            lastErr = null
+                            break
+                        } catch (e: Exception) {
+                            lastErr = e
+                            logger.warn("Upload attempt $attempt/5 failed for {}: {}", file.name, e.message)
+                            if (attempt < 5) delay((5.seconds * attempt).coerceAtMost(30.seconds))
                         }
-                    }.awaitAll()
-                }
-                val msg = buildString {
-                    append("✅ ${ok}/${parts.size} parts uploaded")
-                    if (fail > 0) append(" ($fail failed)")
-                    append(" for ${file.name}")
-                }
-                sendMessage(channelId, msg)
-                file.delete()
-            } else {
-                var lastErr: Exception? = null
-                for (attempt in 1..5) {
-                    try {
-                        uploadVideoDirectly(channelId, file, caption)
-                        lastErr = null
-                        break
-                    } catch (e: Exception) {
-                        lastErr = e
-                        logger.warn("Upload attempt $attempt/5 failed for {}: {}", file.name, e.message)
-                        if (attempt < 5) delay((5.seconds * attempt).coerceAtMost(30.seconds))
+                    }
+                    if (lastErr != null) {
+                        sendMessage(channelId, "⚠️ Upload failed for ${file.name} after 5 attempts")
+                    } else {
+                        file.delete()
                     }
                 }
-                if (lastErr != null) {
-                    sendMessage(channelId, "⚠️ Upload failed for ${file.name} after 5 attempts")
-                } else {
-                    file.delete()
-                }
+            } finally {
+                uploadSemaphore.release()
             }
             logger.info("Processed {} for Telegram channel {}", file.name, channelId)
         } catch (e: Exception) {
