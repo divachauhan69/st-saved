@@ -371,6 +371,7 @@ class TelegramBotComponent(
                     append(" for ${file.name}")
                 }
                 sendMessage(channelId, msg)
+                file.delete()
             } else {
                 var lastErr: Exception? = null
                 for (attempt in 1..3) {
@@ -386,6 +387,8 @@ class TelegramBotComponent(
                 }
                 if (lastErr != null) {
                     sendMessage(channelId, "⚠️ Upload failed for ${file.name} after 3 attempts")
+                } else {
+                    file.delete()
                 }
             }
             logger.info("Processed {} for Telegram channel {}", file.name, channelId)
