@@ -108,35 +108,27 @@ class WriterComponent(
                 active.initBytes = data.copyOf()
             }
 
-            // write data and get the authoritative byte position from FileChannel
-            val channelPos = withContext(Dispatchers.IO) {
+            // write data
+            withContext(Dispatchers.IO) {
                 active.fos.write(data)
                 active.fos.flush()
-                try { active.fos.channel.position() } catch (_: Exception) { -1L }
             }
 
             active.bytesWritten += data.size
 
-            // use max of all measurements for split decision
+            // use actual file size from disk (most reliable)
             val fileLen = try { active.file.length() } catch (_: Exception) { 0L }
-            val effectiveLen = maxOf(
-                if (channelPos >= 0) channelPos else 0L,
-                active.bytesWritten,
-                fileLen
-            )
 
-            // log every 100th message or when approaching the split threshold
-            if (active.bytesWritten % 1_000_000 < data.size || effectiveLen >= segmentSize * 0.9) {
-                logger.info("bytes: written={}, channel={}, fileLen={}, dataSize={}, segIdx={}",
-                    active.bytesWritten, channelPos,
-                    try { active.file.length() } catch (_: Exception) { -1L },
-                    data.size, active.segmentIndex)
+            // log every ~1MB or when close to split
+            if (active.bytesWritten % 500_000 < data.size || fileLen >= segmentSize * 0.8) {
+                logger.info("bytes: written={}, fileLen={}, dataSize={}, segIdx={}",
+                    active.bytesWritten, fileLen, data.size, active.segmentIndex)
             }
 
-            if (effectiveLen >= segmentSize && active.initBytes != null) {
+            if (fileLen >= segmentSize && active.initBytes != null) {
                 val closeTime = Instant.now()
                 val prevFile = active.file
-                val prevLen = effectiveLen
+                val prevLen = fileLen
                 active.fos.close()
                 active.eventFos.close()
 
