@@ -665,14 +665,16 @@ class TelegramBotComponent(
             is TelegramProcessedFile -> {
                 val file = msg.event.file
                 if (!file.exists() || file.length() == 0L) return
-                val roomName = try {
-                    requestBus.request<RoomNameResponse>(GetRoomName(msg.event.roomId)).name
-                } catch (_: Exception) { "unknown" }
-                val caption = buildString {
-                    appendLine("🎬 $roomName (#${msg.event.roomId})")
-                    appendLine("📁 ${file.name}")
-                }
+                val roomId = msg.event.roomId
+                val fileName = file.name
                 botScope?.launch {
+                    val roomName = try {
+                        requestBus.request<RoomNameResponse>(GetRoomName(roomId)).name
+                    } catch (_: Exception) { "unknown" }
+                    val caption = buildString {
+                        appendLine("🎬 $roomName (#$roomId)")
+                        appendLine("📁 $fileName")
+                    }
                     sendFileToChannel(file, caption.trimEnd())
                 }
             }
