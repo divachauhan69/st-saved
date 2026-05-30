@@ -469,7 +469,7 @@ class TelegramBotComponent(
         var thumbOk = false
         try {
             val pb = ProcessBuilder(
-                "ffmpeg", "-y", "-ss", "0",
+                "ffmpeg", "-y", "-skip_frame", "nokey",
                 "-i", uploadFile.absolutePath,
                 "-vframes", "1", "-q:v", "2",
                 thumbFile.absolutePath
@@ -482,7 +482,7 @@ class TelegramBotComponent(
                 thumbFile.delete()
                 val pb = ProcessBuilder(
                     "ffmpeg", "-y", "-i", uploadFile.absolutePath,
-                    "-vf", "thumbnail", "-frames:v", "1", "-q:v", "2",
+                    "-vf", "select=eq(n\\,0)", "-vframes", "1", "-q:v", "2",
                     thumbFile.absolutePath
                 )
                 pb.redirectErrorStream(true)
@@ -537,10 +537,12 @@ class TelegramBotComponent(
             val respBody = try { conn.inputStream.bufferedReader().readText() } catch (_: Exception) { "" }
             if (responseCode != 200) {
                 logger.error("Telegram sendVideo returned $responseCode: $respBody")
+                throw RuntimeException("Telegram API $responseCode: ${respBody.take(200)}")
             } else {
                 val ok = try { Json.parseToJsonElement(respBody).jsonObject["ok"]?.jsonPrimitive?.boolean } catch (_: Exception) { null }
                 if (ok != true) {
                     logger.error("Telegram API error: $respBody")
+                    throw RuntimeException("Telegram API error: ${respBody.take(200)}")
                 }
             }
         } catch (e: Exception) {
