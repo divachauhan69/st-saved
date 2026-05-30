@@ -36,7 +36,7 @@ class ActiveFile(
     val startTime: Instant,
     var bytesWritten: Long = 0,
     var segmentIndex: Int = 0,
-    var initBytes: ByteArray? = null
+
 ) {
     fun dispose() {
         try { fos.close() } catch (_: Exception) { }
@@ -105,10 +105,6 @@ class WriterComponent(
             var data = msg.data
             hooks.forEach { data = it.beforeWrite(msg.roomId, data) }
 
-            if (active.initBytes == null) {
-                active.initBytes = data.copyOf()
-            }
-
             // write data
             withContext(Dispatchers.IO) {
                 active.fos.write(data)
@@ -126,7 +122,7 @@ class WriterComponent(
                     active.bytesWritten, fileLen, data.size, active.segmentIndex)
             }
 
-            if (fileLen >= segmentSize && active.initBytes != null) {
+            if (fileLen >= segmentSize) {
                 val closeTime = Instant.now()
                 val prevFile = active.file
                 val prevLen = fileLen
@@ -150,14 +146,16 @@ class WriterComponent(
                 val newPath = partPath(active.roomName, active.startTime, segIdx)
                 val newFile = File(newPath)
                 val newEventFile = File("$newPath.event")
+                val headerLen = minOf(64 * 1024, segFile.length()).toInt()
+                val headerBytes = segFile.readBytes().copyOfRange(0, headerLen)
                 val newFos = FileOutputStream(newFile)
                 val newEventFos = FileOutputStream(newEventFile)
-                newFos.write(active.initBytes!!)
+                newFos.write(headerBytes)
                 active.file = newFile
                 active.eventFile = newEventFile
                 active.fos = newFos
                 active.eventFos = newEventFos
-                active.bytesWritten = active.initBytes!!.size.toLong()
+                active.bytesWritten = headerBytes.size.toLong()
                 logger.info("SPLIT: segIdx={}, prevLen={}MB, newFile={}", segIdx, prevLen / 1_000_000, newPath)
 
                 // remux closed segment asynchronously to normalize timestamps
@@ -175,8 +173,7 @@ class WriterComponent(
                             )
                             pb.redirectErrorStream(true)
                             val proc = pb.start()
-                            // consume stdout to prevent pipe buffer deadlock
-                            proc.inputStream.readAllBytes()
+                            val output = proc.inputStream.bufferedReader().readText()
                             val exited = proc.waitFor(60, TimeUnit.SECONDS)
                             remuxOk = exited && remuxed.exists() && remuxed.length() > 0
                             if (remuxOk) {
@@ -184,8 +181,9 @@ class WriterComponent(
                             } else if (!exited) {
                                 logger.warn("Remux timed out for {}", segName)
                             } else {
-                                logger.warn("Remux failed for {} (exit={}, output={}B)", segName,
-                                    proc.exitValue(), remuxed.length())
+                                val errPreview = output.take(500).replace("\n", " | ")
+                                logger.warn("Remux failed for {} (exit={}, output={}B, err={})", segName,
+                                    proc.exitValue(), remuxed.length(), errPreview)
                             }
                         } catch (e: Exception) {
                             logger.warn("Remux exception for {}: {}", segName, e.message)
@@ -253,7 +251,7 @@ class WriterComponent(
                     )
                     pb.redirectErrorStream(true)
                     val proc = pb.start()
-                    proc.inputStream.readAllBytes()
+                    val output = proc.inputStream.bufferedReader().readText()
                     val exited = proc.waitFor(60, TimeUnit.SECONDS)
                     remuxOk = exited && remuxed.exists() && remuxed.length() > 0
                     if (remuxOk) {
@@ -261,8 +259,9 @@ class WriterComponent(
                     } else if (!exited) {
                         logger.warn("End remux timed out for {}", finalName)
                     } else {
-                        logger.warn("End remux failed for {} (exit={}, output={}B)", finalName,
-                            proc.exitValue(), remuxed.length())
+                        val errPreview = output.take(500).replace("\n", " | ")
+                        logger.warn("End remux failed for {} (exit={}, output={}B, err={})", finalName,
+                            proc.exitValue(), remuxed.length(), errPreview)
                     }
                 } catch (e: Exception) {
                     logger.warn("End remux exception for {}: {}", finalName, e.message)
